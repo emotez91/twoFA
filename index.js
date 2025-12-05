@@ -6,6 +6,7 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const admin = require('firebase-admin');
 const bcrypt = require('bcryptjs'); // NEW: Security Library
+const cors = require('cors');
 
 // Initialize Firestore
 admin.initializeApp();
@@ -13,6 +14,24 @@ const db = admin.firestore();
 
 const app = express();
 app.use(bodyParser.json());
+
+// Add your specific frontend URLs here
+const allowedOrigins = [
+  'http://localhost:3000',
+  'http://localhost:5173',
+  'https://www.mustangcanada.com' // Future production URL
+];
+
+app.use(cors({
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true // Important for auth headers/cookies
+}));
 
 // --- HELPERS ---
 function encrypt(text) {
