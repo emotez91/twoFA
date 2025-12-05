@@ -35,6 +35,46 @@ function decrypt(text) {
 
 // --- ENDPOINTS ---
 
+// NEW: Endpoint to check Factor 1 (Password)
+app.post('/login', async (req, res) => {
+    try {
+        const { userId, password } = req.body;
+        if (!userId || !password) return res.status(400).json({ error: "Missing userId or password" });
+
+        // 1. REALITY CHECK: Replace this with your actual DB password check
+        // For now, we accept ANY password just to test the flow
+        const isPasswordCorrect = true;
+
+        if (!isPasswordCorrect) {
+            return res.status(401).json({ error: "Invalid password" });
+        }
+
+        // 2. Check if this user has 2FA enabled in Firestore
+        const userDoc = await db.collection('users').doc(userId).get();
+        const userData = userDoc.exists ? userDoc.data() : {};
+
+        if (userData.two_fa_enabled) {
+            // CASE A: Password Good, but 2FA is ON.
+            // Tell the app to ask for the code.
+            return res.json({
+                status: "2FA_REQUIRED",
+                message: "Please enter your 6-digit code"
+            });
+        } else {
+            // CASE B: Password Good, 2FA is OFF.
+            // Login complete! Issue the token immediately.
+            const sessionToken = jwt.sign({ id: userId }, process.env.JWT_SECRET, { expiresIn: '1h' });
+            return res.json({
+                status: "SUCCESS",
+                token: sessionToken
+            });
+        }
+    } catch (err) {
+        console.error('Error in /login:', err);
+        return res.status(500).json({ error: "Internal server error" });
+    }
+});
+
 app.post('/setup-2fa', async (req, res) => {
     const userId = req.body.userId;
     if(!userId) return res.status(400).send("Missing userId");
