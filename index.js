@@ -4,16 +4,17 @@ const speakeasy = require('speakeasy');
 const qrcode = require('qrcode');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
+const admin = require('firebase-admin');
 
-// Forcing a new build
+// 1. Initialize Firestore
+// (Cloud Run automatically handles credentials here)
+admin.initializeApp();
+const db = admin.firestore();
 
 const app = express();
 app.use(bodyParser.json());
 
-// --- SECURITY HELPERS ---
-
-// 1. Helper to Encrypt the 2FA Secret before storing in DB
-// Uses your 'TWO_FACTOR_ENCRYPTION_KEY' from Cloud Run
+// --- HELPERS ---
 function encrypt(text) {
     const iv = crypto.randomBytes(16);
     const cipher = crypto.createCipheriv('aes-256-cbc', Buffer.from(process.env.TWO_FACTOR_ENCRYPTION_KEY), iv);
@@ -22,7 +23,6 @@ function encrypt(text) {
     return iv.toString('hex') + ':' + encrypted.toString('hex');
 }
 
-// 2. Helper to Decrypt the 2FA Secret when verifying
 function decrypt(text) {
     let textParts = text.split(':');
     let iv = Buffer.from(textParts.shift(), 'hex');
@@ -33,59 +33,47 @@ function decrypt(text) {
     return decrypted.toString();
 }
 
-// --- MOCK DATABASE (Replace this with your real DB code) ---
-// We are simulating a DB here to make this code copy-paste runnable.
-const usersDB = {}; 
-
 // --- ENDPOINTS ---
 
-// STEP 1: Setup 2FA (User scans the QR code)
-app.post('/setup-2fa', (req, res) => {
-    const userId = req.body.userId; // In real app, get this from session
-    
-    // Generate a temporary secret
-    const secret = speakeasy.generateSecret({ name: "MyApp (" + userId + ")" });
-    
-    // Encrypt it using your Cloud Run Env Variable
-    const encryptedSecret = encrypt(secret.base32);
-    
-    // Store in DB (Mocking this part)
-    usersDB[userId] = { 
-        two_fa_secret: encryptedSecret, 
-        two_fa_enabled: false 
-    };
+app.post('/setup-2fa', async (req, res) => {
+    const userId = req.body.userId;
+    if(!userId) return res.status(400).send("Missing userId");
 
-    // Generate QR Code for frontend to display
+    const secret = speakeasy.generateSecret({ name: "MyApp (" + userId + ")" });
+    const encryptedSecret = encrypt(secret.base32);
+
+    // 2. SAVE TO DATABASE (Persistent!)
+    await db.collection('users').doc(userId).set({
+        two_fa_secret: encryptedSecret,
+        two_fa_enabled: false
+    }, { merge: true });
+
     qrcode.toDataURL(secret.otpauth_url, (err, data_url) => {
         res.json({ qr_code: data_url, manual_entry: secret.base32 });
     });
 });
 
-// STEP 2: Verify & Login (User enters the 6-digit code)
-app.post('/verify-2fa', (req, res) => {
+app.post('/verify-2fa', async (req, res) => {
     const { userId, token } = req.body;
-    const user = usersDB[userId];
+    
+    // 3. GET FROM DATABASE
+    const userDoc = await db.collection('users').doc(userId).get();
 
-    if (!user) return res.status(404).json({ error: "User not found" });
+    if (!userDoc.exists) return res.status(404).json({ error: "User not found" });
 
-    // Decrypt the stored secret
-    const decryptedSecret = decrypt(user.two_fa_secret);
+    const userData = userDoc.data();
+    const decryptedSecret = decrypt(userData.two_fa_secret);
 
-    // Verify the code
     const verified = speakeasy.totp.verify({
         secret: decryptedSecret,
         encoding: 'base32',
         token: token,
-        window: 1 // Allows for slight time drift
+        window: 1
     });
 
     if (verified) {
-        // Code is good! Issue the JWT Session
-        user.two_fa_enabled = true; // Mark as enabled
-        
-        // Sign token using your 'JWT_SECRET' from Cloud Run
+        await db.collection('users').doc(userId).update({ two_fa_enabled: true });
         const sessionToken = jwt.sign({ id: userId }, process.env.JWT_SECRET, { expiresIn: '1h' });
-        
         res.json({ status: "SUCCESS", token: sessionToken });
     } else {
         res.status(401).json({ status: "FAILED", message: "Invalid code" });
@@ -93,6 +81,4 @@ app.post('/verify-2fa', (req, res) => {
 });
 
 const port = process.env.PORT || 8080;
-app.listen(port, () => {
-    console.log(`Server running on port ${port}`);
-});
+app.listen(port, () => { console.log(`Server running on port ${port}`); });
