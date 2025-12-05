@@ -5,9 +5,9 @@ const qrcode = require('qrcode');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const admin = require('firebase-admin');
+const bcrypt = require('bcryptjs'); // NEW: Security Library
 
-// 1. Initialize Firestore
-// (Cloud Run automatically handles credentials here)
+// Initialize Firestore
 admin.initializeApp();
 const db = admin.firestore();
 
@@ -35,73 +35,79 @@ function decrypt(text) {
 
 // --- ENDPOINTS ---
 
-// NEW: Endpoint to check Factor 1 (Password)
+// 1. SIGN UP (Create a new user)
+app.post('/signup', async (req, res) => {
+    const { userId, password } = req.body;
+    
+    if(!userId || !password) return res.status(400).send("Missing fields");
+
+    // Check if user already exists
+    const userDoc = await db.collection('users').doc(userId).get();
+    if (userDoc.exists) return res.status(400).send("User already exists");
+
+    // Hash the password (Security Best Practice)
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
+    // Save to Firestore
+    await db.collection('users').doc(userId).set({
+        password_hash: hashedPassword,
+        two_fa_enabled: false,
+        created_at: new Date()
+    });
+
+    res.json({ status: "SUCCESS", message: "User created" });
+});
+
+// 2. LOGIN (Factor 1 Check)
 app.post('/login', async (req, res) => {
-    try {
-        const { userId, password } = req.body;
-        if (!userId || !password) return res.status(400).json({ error: "Missing userId or password" });
+    const { userId, password } = req.body;
 
-        // 1. REALITY CHECK: Replace this with your actual DB password check
-        // For now, we accept ANY password just to test the flow
-        const isPasswordCorrect = true;
+    // Get user from DB
+    const userDoc = await db.collection('users').doc(userId).get();
+    if (!userDoc.exists) return res.status(401).json({ error: "Invalid credentials" });
 
-        if (!isPasswordCorrect) {
-            return res.status(401).json({ error: "Invalid password" });
-        }
+    const userData = userDoc.data();
 
-        // 2. Check if this user has 2FA enabled in Firestore
-        const userDoc = await db.collection('users').doc(userId).get();
-        const userData = userDoc.exists ? userDoc.data() : {};
+    // Compare Password with Hash
+    const validPass = await bcrypt.compare(password, userData.password_hash);
+    if (!validPass) return res.status(401).json({ error: "Invalid credentials" });
 
-        if (userData.two_fa_enabled) {
-            // CASE A: Password Good, but 2FA is ON.
-            // Tell the app to ask for the code.
-            return res.json({
-                status: "2FA_REQUIRED",
-                message: "Please enter your 6-digit code"
-            });
-        } else {
-            // CASE B: Password Good, 2FA is OFF.
-            // Login complete! Issue the token immediately.
-            const sessionToken = jwt.sign({ id: userId }, process.env.JWT_SECRET, { expiresIn: '1h' });
-            return res.json({
-                status: "SUCCESS",
-                token: sessionToken
-            });
-        }
-    } catch (err) {
-        console.error('Error in /login:', err);
-        return res.status(500).json({ error: "Internal server error" });
+    // Password is good! Check 2FA status.
+    if (userData.two_fa_enabled) {
+        return res.json({ status: "2FA_REQUIRED" });
+    } else {
+        const sessionToken = jwt.sign({ id: userId }, process.env.JWT_SECRET, { expiresIn: '1h' });
+        return res.json({ status: "SUCCESS", token: sessionToken });
     }
 });
 
+// 3. SETUP 2FA
 app.post('/setup-2fa', async (req, res) => {
-    const userId = req.body.userId;
-    if(!userId) return res.status(400).send("Missing userId");
-
+    const userId = req.body.userId; // In real app, extract this from a temporary session token
+    
     const secret = speakeasy.generateSecret({ name: "MyApp (" + userId + ")" });
     const encryptedSecret = encrypt(secret.base32);
 
-    // 2. SAVE TO DATABASE (Persistent!)
-    await db.collection('users').doc(userId).set({
-        two_fa_secret: encryptedSecret,
-        two_fa_enabled: false
-    }, { merge: true });
+    await db.collection('users').doc(userId).update({
+        two_fa_secret: encryptedSecret
+    });
 
     qrcode.toDataURL(secret.otpauth_url, (err, data_url) => {
         res.json({ qr_code: data_url, manual_entry: secret.base32 });
     });
 });
 
+// 4. VERIFY 2FA (Factor 2 Check)
 app.post('/verify-2fa', async (req, res) => {
     const { userId, token } = req.body;
     
-    // 3. GET FROM DATABASE
     const userDoc = await db.collection('users').doc(userId).get();
-
     if (!userDoc.exists) return res.status(404).json({ error: "User not found" });
 
     const userData = userDoc.data();
+    if (!userData.two_fa_secret) return res.status(400).json({ error: "2FA not set up" });
+
     const decryptedSecret = decrypt(userData.two_fa_secret);
 
     const verified = speakeasy.totp.verify({
