@@ -145,5 +145,8 @@ app.post('/verify-2fa', async (req, res) => {
     }
 });
 
-const port = process.env.PORT || 8080;
-app.listen(port, () => { console.log(`Server running on port ${port}`); });
+const PORT = process.env.PORT || 8080; // Let Cloud Run decide, or default to 8080 locally
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server running on port ${PORT}`);
+});
