@@ -1,16 +1,14 @@
 {
   "name": "2fa-backend",
   "version": "1.0.0",
-  "description": "Secure 2FA Backend",
   "main": "index.js",
-  "scripts": {
-    "start": "node index.js"
-  },
+  "scripts": { "start": "node index.js" },
   "dependencies": {
     "express": "^4.18.2",
     "speakeasy": "^2.0.0",
     "qrcode": "^1.5.3",
     "jsonwebtoken": "^9.0.0",
-    "body-parser": "^1.20.2"
+    "body-parser": "^1.20.2",
+    "firebase-admin": "^11.11.0"
   }
 }
